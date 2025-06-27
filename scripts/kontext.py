@@ -85,6 +85,9 @@ class forgeKontext(scripts.Script):
 
                         if quarter:
                             k_image = adaptive_resize(k_image, w*4, h*4, "lanczos", "center")
+                            if image1 is None or image2 is None: # one input, pad
+                                padr = (w*8) - k_image.shape[3]
+                                k_image = torch.nn.functional.pad(k_image, (0, padr), mode='constant', value=0)
                         else:
                             k_image = adaptive_resize(k_image, w*8, h*8, "lanczos", "center")
 
@@ -93,10 +96,8 @@ class forgeKontext(scripts.Script):
                 if quarter:
                     if image1 is not None and image2 is not None:   # two quarter-size inputs, stack horizontally
                         forgeKontext.latent = torch.cat(k_latents, dim=3)
-                    else:                                           # one quarter-size input, need to pad width
-                        padl = (w - k_latents[0].shape[3]) // 2
-                        padr = w - k_latents[0].shape[3] - padl
-                        forgeKontext.latent = torch.nn.functional.pad(k_latents[0], (padl, padr), mode='constant')
+                    else:                                           # one quarter-size input, already padded
+                        forgeKontext.latent = k_latents[0]
                 else:                                               # one or two full-size inputs, stack vertically
                     forgeKontext.latent = torch.cat(k_latents, dim=2)
 
