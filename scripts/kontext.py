@@ -14,6 +14,25 @@ def patched_to_d(x, s, d):
 sd_schedulers.to_d = patched_to_d
 k_diffusion.sampling.to_d = patched_to_d
 
+# PREFERRED_KONTEXT_RESOLUTIONS = [
+    # (672, 1568),
+    # (688, 1504),
+    # (720, 1456),
+    # (752, 1392),
+    # (800, 1328),
+    # (832, 1248),
+    # (880, 1184),
+    # (944, 1104),
+    # (1024, 1024),
+    # (1104, 944),
+    # (1184, 880),
+    # (1248, 832),
+    # (1328, 800),
+    # (1392, 752),
+    # (1456, 720),
+    # (1504, 688),
+    # (1568, 672),
+# ]
 
 class forgeKontext(scripts.Script):
     sorting_priority = 0
@@ -23,28 +42,27 @@ class forgeKontext(scripts.Script):
 
     def show(self, is_img2img):
         # make this extension visible in both txt2img and img2img tab.
+        # useful in i2i ?
         return scripts.AlwaysVisible
 
     def ui(self, *args, **kwargs):
         with InputAccordion(False, label=self.title()) as enabled:
-
-            gradio.Markdown("Select Kontext image(s).")
             with gradio.Row():
                 kontext_image1 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
                 kontext_image2 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
-
             with gradio.Row():
-                swap12 = gradio.Button("swap Kontext 1 and 2", scale=0)
+                swap12 = gradio.Button("swap Kontext 1 and 2")
+                quarter = gradio.Checkbox(False, label="reduced size input(s)")
 
                 def kontext_swap(imageA, imageB):
                     return imageB, imageA
                 swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
 
-        return enabled, kontext_image1, kontext_image2
+        return enabled, kontext_image1, kontext_image2, quarter
 
 
     def process_before_every_sampling(self, params, *script_args, **kwargs):
-        enabled, image1, image2 = script_args
+        enabled, image1, image2, quarter = script_args
         if enabled and (image1 is not None or image2 is not None):
             if params.iteration > 0:    # batch count
                 # setup done on iteration 0
@@ -62,11 +80,25 @@ class forgeKontext(scripts.Script):
                         k_image = numpy.transpose(k_image, (2, 0, 1))
                         k_image = torch.tensor(k_image).unsqueeze(0)
 
-                        k_image = adaptive_resize(k_image, w*8, h*8, "lanczos", "center")
+    #   width of input images must match latent width, padding OK
+    #   height does not need to match
+
+                        if quarter:
+                            k_image = adaptive_resize(k_image, w*4, h*4, "lanczos", "center")
+                        else:
+                            k_image = adaptive_resize(k_image, w*8, h*8, "lanczos", "center")
 
                         k_latents.append(images_tensor_to_samples(k_image, approximation_indexes.get(shared.opts.sd_vae_encode_method), params.sd_model))
 
-                forgeKontext.latent = torch.cat(k_latents, dim=2)
+                if quarter:
+                    if image1 is not None and image2 is not None:   # two quarter-size inputs, stack horizontally
+                        forgeKontext.latent = torch.cat(k_latents, dim=3)
+                    else:                                           # one quarter-size input, need to pad width
+                        padl = (w - k_latents[0].shape[3]) // 2
+                        padr = w - k_latents[0].shape[3] - padl
+                        forgeKontext.latent = torch.nn.functional.pad(k_latents[0], (padl, padr), mode='constant')
+                else:                                               # one or two full-size inputs, stack vertically
+                    forgeKontext.latent = torch.cat(k_latents, dim=2)
 
 
                 def apply_kontext(self):
