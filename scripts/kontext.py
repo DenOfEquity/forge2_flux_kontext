@@ -9,6 +9,7 @@ from backend.misc.image_resize import adaptive_resize
 from backend.nn.flux import IntegratedFluxTransformer2DModel
 from einops import rearrange, repeat
 
+
 def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs):
     bs, c, h, w = x.shape
     input_device = x.device
@@ -31,16 +32,24 @@ def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs)
     if forgeKontext.latent != None:
         kh = forgeKontext.latentH
         kw = forgeKontext.latentW
-        
+
+        # why isn't this always h?
+        if h+kw > w+kw:
+            w_offset = w
+            h_offset = 0
+        else:
+            w_offset = 0
+            h_offset = h
+
         img = torch.cat([img, forgeKontext.latent.to(device=input_device, dtype=input_dtype)], dim=1)
 
         kh_len = ((kh + (patch_size // 2)) // patch_size)
         kw_len = ((kw + (patch_size // 2)) // patch_size)
 
         kontext_ids = torch.zeros((kh_len, kw_len, 3), device=input_device, dtype=input_dtype)
-        kontext_ids[..., 0] = kontext_ids[..., 1] + 1
-        kontext_ids[..., 1] = kontext_ids[..., 1] + torch.linspace(0, kh_len - 1, steps=kh_len, device=input_device, dtype=input_dtype)[:, None]
-        kontext_ids[..., 2] = kontext_ids[..., 2] + torch.linspace(0, kw_len - 1, steps=kw_len, device=input_device, dtype=input_dtype)[None, :]
+        kontext_ids[:, :, 0] = kontext_ids[:, :, 1] + 1
+        kontext_ids[:, :, 1] += torch.linspace(h_offset, kh_len - 1 + h_offset, steps=kh_len, device=input_device, dtype=input_dtype)[:, None]
+        kontext_ids[:, :, 2] += torch.linspace(w_offset, kw_len - 1 + w_offset, steps=kw_len, device=input_device, dtype=input_dtype)[None, :]
         kontext_ids = repeat(kontext_ids, "h w c -> b (h w) c", b=bs)
         
         img_ids = torch.cat([img_ids, kontext_ids], dim=1)
