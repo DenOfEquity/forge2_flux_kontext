@@ -2,17 +2,61 @@ import gradio
 import torch, numpy
 
 from modules import scripts, shared
-from modules.ui_components import InputAccordion#, ToolButton
-from modules.script_callbacks import on_cfg_denoiser, on_cfg_denoised, remove_current_script_callbacks
+from modules.ui_components import InputAccordion
 from modules.sd_samplers_common import images_tensor_to_samples, approximation_indexes
 from backend.misc.image_resize import adaptive_resize
 
-import k_diffusion
-from modules import sd_schedulers
-def patched_to_d(x, s, d):
-    return (x - d[:, :, 0:x.shape[2], :]) / s
-sd_schedulers.to_d = patched_to_d
-k_diffusion.sampling.to_d = patched_to_d
+from backend.nn.flux import IntegratedFluxTransformer2DModel
+from einops import rearrange, repeat
+
+def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs):
+    bs, c, h, w = x.shape
+    input_device = x.device
+    input_dtype = x.dtype
+    patch_size = 2
+    pad_h = (patch_size - x.shape[-2] % patch_size) % patch_size
+    pad_w = (patch_size - x.shape[-1] % patch_size) % patch_size
+    x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode="circular")
+    img = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch_size, pw=patch_size)
+    del x, pad_h, pad_w
+    h_len = ((h + (patch_size // 2)) // patch_size)
+    w_len = ((w + (patch_size // 2)) // patch_size)
+
+    img_ids = torch.zeros((h_len, w_len, 3), device=input_device, dtype=input_dtype)
+    img_ids[..., 1] = img_ids[..., 1] + torch.linspace(0, h_len - 1, steps=h_len, device=input_device, dtype=input_dtype)[:, None]
+    img_ids[..., 2] = img_ids[..., 2] + torch.linspace(0, w_len - 1, steps=w_len, device=input_device, dtype=input_dtype)[None, :]
+    img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
+    img_tokens = img.shape[1]
+
+    if forgeKontext.latent != None:
+        kh = forgeKontext.latentH
+        kw = forgeKontext.latentW
+        
+        img = torch.cat([img, forgeKontext.latent.to(device=input_device, dtype=input_dtype)], dim=1)
+
+        kh_len = ((kh + (patch_size // 2)) // patch_size)
+        kw_len = ((kw + (patch_size // 2)) // patch_size)
+
+        kontext_ids = torch.zeros((kh_len, kw_len, 3), device=input_device, dtype=input_dtype)
+        kontext_ids[..., 0] = kontext_ids[..., 1] + 1
+        kontext_ids[..., 1] = kontext_ids[..., 1] + torch.linspace(0, kh_len - 1, steps=kh_len, device=input_device, dtype=input_dtype)[:, None]
+        kontext_ids[..., 2] = kontext_ids[..., 2] + torch.linspace(0, kw_len - 1, steps=kw_len, device=input_device, dtype=input_dtype)[None, :]
+        kontext_ids = repeat(kontext_ids, "h w c -> b (h w) c", b=bs)
+        
+        img_ids = torch.cat([img_ids, kontext_ids], dim=1)
+
+    txt_ids = torch.zeros((bs, context.shape[1], 3), device=input_device, dtype=input_dtype)
+    del input_device, input_dtype
+    out = self.inner_forward(img, img_ids, context, txt_ids, timestep, y, guidance)
+    del img, img_ids, txt_ids, timestep, context
+
+    out = out[:, :img_tokens]
+    out = rearrange(out, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=h_len, w=w_len, ph=2, pw=2)[:,:,:h,:w]
+
+    del h_len, w_len, bs
+
+    return out
+
 
 # PREFERRED_KONTEXT_RESOLUTIONS = [
     # (672, 1568),
@@ -36,12 +80,17 @@ k_diffusion.sampling.to_d = patched_to_d
 
 class forgeKontext(scripts.Script):
     sorting_priority = 0
+    original_forward = None
+    latent = None
+
+    def __init__(self):
+        if forgeKontext.original_forward is None:
+            forgeKontext.original_forward = IntegratedFluxTransformer2DModel.forward
 
     def title(self):
-        return "Forge2 FluxKontext"
+        return "Forge FluxKontext"
 
     def show(self, is_img2img):
-        # make this extension visible in both txt2img and img2img tab.
         # useful in i2i ?
         return scripts.AlwaysVisible
 
@@ -95,33 +144,24 @@ class forgeKontext(scripts.Script):
 
                 if quarter:
                     if image1 is not None and image2 is not None:   # two quarter-size inputs, stack horizontally
-                        forgeKontext.latent = torch.cat(k_latents, dim=3)
+                        latent = torch.cat(k_latents, dim=3)
                     else:                                           # one quarter-size input, already padded
-                        forgeKontext.latent = k_latents[0]
+                        latent = k_latents[0]
                 else:                                               # one or two full-size inputs, stack vertically
-                    forgeKontext.latent = torch.cat(k_latents, dim=2)
+                    latent = torch.cat(k_latents, dim=2)
 
-
-                def apply_kontext(self):
-                    forgeKontext.true_h = None
-                    if forgeKontext.latent is not None:
-                        forgeKontext.true_h = self.x.shape[2]
-                        self.x = torch.cat([self.x, forgeKontext.latent], dim=2)
-                def remove_kontext(self):
-                    if forgeKontext.true_h is not None:
-                        self.x = self.x[:, :, 0:forgeKontext.true_h, :]
-
-                on_cfg_denoiser(apply_kontext)
-                on_cfg_denoised(remove_kontext)
+                forgeKontext.latentH = latent.shape[2]
+                forgeKontext.latentW = latent.shape[3]
+                forgeKontext.latent = rearrange(latent, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
+                
+                IntegratedFluxTransformer2DModel.forward = patched_flux_forward
 
         return
-
 
     def postprocess(self, params, processed, *args):
         enabled = args[0]
         if enabled:
             forgeKontext.latent = None
-            forgeKontext.true_h = None
-            remove_current_script_callbacks()
+            IntegratedFluxTransformer2DModel.forward = forgeKontext.original_forward
 
         return
