@@ -30,21 +30,8 @@ def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs)
     img_tokens = img.shape[1]
 
     if forgeKontext.latent != None:
-        kh = forgeKontext.latentH
-        kw = forgeKontext.latentW
-
-        img = torch.cat([img, forgeKontext.latent.to(device=input_device, dtype=input_dtype)], dim=1)
-
-        kh_len = ((kh + (patch_size // 2)) // patch_size)
-        kw_len = ((kw + (patch_size // 2)) // patch_size)
-
-        kontext_ids = torch.zeros((kh_len, kw_len, 3), device=input_device, dtype=input_dtype)
-        kontext_ids[:, :, 0] = 1
-        kontext_ids[:, :, 1] += torch.linspace(0, kh_len - 1, steps=kh_len, device=input_device, dtype=input_dtype)[:, None]
-        kontext_ids[:, :, 2] += torch.linspace(0, kw_len - 1, steps=kw_len, device=input_device, dtype=input_dtype)[None, :]
-        kontext_ids = repeat(kontext_ids, "h w c -> b (h w) c", b=bs)
-
-        img_ids = torch.cat([img_ids, kontext_ids], dim=1)
+        img = torch.cat([img, forgeKontext.latent], dim=1)
+        img_ids = torch.cat([img_ids, forgeKontext.ids], dim=1)
 
     txt_ids = torch.zeros((bs, context.shape[1], 3), device=input_device, dtype=input_dtype)
     del input_device, input_dtype
@@ -59,25 +46,25 @@ def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs)
     return out
 
 
-# PREFERRED_KONTEXT_RESOLUTIONS = [
-    # (672, 1568),
-    # (688, 1504),
-    # (720, 1456),
-    # (752, 1392),
-    # (800, 1328),
-    # (832, 1248),
-    # (880, 1184),
-    # (944, 1104),
-    # (1024, 1024),
-    # (1104, 944),
-    # (1184, 880),
-    # (1248, 832),
-    # (1328, 800),
-    # (1392, 752),
-    # (1456, 720),
-    # (1504, 688),
-    # (1568, 672),
-# ]
+PREFERRED_KONTEXT_RESOLUTIONS = [
+    (672, 1568),
+    (688, 1504),
+    (720, 1456),
+    (752, 1392),
+    (800, 1328),
+    (832, 1248),
+    (880, 1184),
+    (944, 1104),
+    (1024, 1024),
+    (1104, 944),
+    (1184, 880),
+    (1248, 832),
+    (1328, 800),
+    (1392, 752),
+    (1456, 720),
+    (1504, 688),
+    (1568, 672),
+]
 
 class forgeKontext(scripts.Script):
     sorting_priority = 0
@@ -92,7 +79,6 @@ class forgeKontext(scripts.Script):
         return "Forge FluxKontext"
 
     def show(self, is_img2img):
-        # useful in i2i ?
         return scripts.AlwaysVisible
 
     def ui(self, *args, **kwargs):
@@ -100,19 +86,20 @@ class forgeKontext(scripts.Script):
             with gradio.Row():
                 kontext_image1 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
                 kontext_image2 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
+            sizing = gradio.Radio(label="Kontext image size/crop", choices=["no change", "to output", "to BFL recommended"], value="to BFL recommended")
             with gradio.Row():
-                swap12 = gradio.Button("swap Kontext 1 and 2")
-                quarter = gradio.Checkbox(False, label="reduced size input(s)")
+                swap12 = gradio.Button("swap images", scale=0)
+                reduce = gradio.Checkbox(False, label="reduce inputs to half width and height")
 
                 def kontext_swap(imageA, imageB):
                     return imageB, imageA
                 swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
 
-        return enabled, kontext_image1, kontext_image2, quarter
+        return enabled, kontext_image1, kontext_image2, sizing, reduce
 
 
     def process_before_every_sampling(self, params, *script_args, **kwargs):
-        enabled, image1, image2, quarter = script_args
+        enabled, image1, image2, sizing, reduce = script_args
         if enabled and (image1 is not None or image2 is not None):
             if params.iteration > 0:    # batch count
                 # setup done on iteration 0
@@ -121,8 +108,16 @@ class forgeKontext(scripts.Script):
             if not params.sd_model.is_webui_legacy_model():
                 x = kwargs['x']
                 n, c, h, w = x.size()
+                input_device = x.device
+                input_dtype = x.dtype
+
+# todo?: cache results to avoid VAE encode
 
                 k_latents = []
+                k_ids = []
+                accum_h = 0
+                accum_w = 0
+                # extra_mem = 0   # test if useful for large inputs
                 for image in [image1, image2]:
                     if image is not None:
                         k_image = image.convert('RGB')
@@ -130,32 +125,86 @@ class forgeKontext(scripts.Script):
                         k_image = numpy.transpose(k_image, (2, 0, 1))
                         k_image = torch.tensor(k_image).unsqueeze(0)
 
-    #   width of input images must match latent width, padding OK
-    #   height does not need to match
+                        # it seems that the img_id is always 1 for the context images
+                        # so resize and combine here instead of in the forward function
 
-                        if quarter:
-                            k_image = adaptive_resize(k_image, w*4, h*4, "lanczos", "center")
-                            if image1 is None or image2 is None: # one input, pad
-                                padr = (w*8) - k_image.shape[3]
-                                k_image = torch.nn.functional.pad(k_image, (0, padr), mode='constant', value=0)
-                        else:
+                        # only go through the resize process if image is not already desired size
+                        match sizing:
+                            case "no change":
+                                k_width = k_image.shape[3]
+                                k_height = k_image.shape[2]
+                            case "to output":
+                                k_width = w * 8
+                                k_height = h * 8
+                            case "to BFL recommended":  # this snippet from ComfyUI
+                                k_width = k_image.shape[3]
+                                k_height = k_image.shape[2]
+                                aspect_ratio = k_width / k_height
+                                _, k_width, k_height = min((abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_KONTEXT_RESOLUTIONS)
+
+                        if reduce:
+                            k_width //= 2
+                            k_height //= 2
+
+                        if k_image.shape[3] != k_width or k_image.shape[2] != k_height:
+                            print ("[Kontext] resizing and center-cropping input to: ", k_width, k_height)
                             k_image = adaptive_resize(k_image, w*8, h*8, "lanczos", "center")
+                        else:
+                            print ("[Kontext] no image resize needed")
 
-                        k_latents.append(images_tensor_to_samples(k_image, approximation_indexes.get(shared.opts.sd_vae_encode_method), params.sd_model))
+                        # VAE encode each input image - combined image could be large
+                        k_latent = images_tensor_to_samples(k_image, approximation_indexes.get(shared.opts.sd_vae_encode_method), params.sd_model)
 
-                if quarter:
-                    if image1 is not None and image2 is not None:   # two quarter-size inputs, stack horizontally
-                        latent = torch.cat(k_latents, dim=3)
-                    else:                                           # one quarter-size input, already padded
-                        latent = k_latents[0]
-                else:                                               # one or two full-size inputs, stack vertically
-                    latent = torch.cat(k_latents, dim=2)
+                        # pad if needed - latent width and height must be multiple of 2
+                        # could just adjust the resize to be *16, but the padding might be better for images that need only one extra row/col
+                        patch_size = 2
+                        pad_h = k_latent.shape[2] % patch_size
+                        pad_w = k_latent.shape[3] % patch_size
+                        k_latent = torch.nn.functional.pad(k_latent, (0, pad_w, 0, pad_h), mode="circular")
 
-                forgeKontext.latentH = latent.shape[2]
-                forgeKontext.latentW = latent.shape[3]
-                forgeKontext.latent = rearrange(latent, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-                
+                        k_latents.append(rearrange(k_latent, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch_size, pw=patch_size))
+                        # imgs are combined in rearranged dimension 1 - so width/height can be independant of main latent and other inputs
+
+                        latentH = k_latent.shape[2]
+                        latentW = k_latent.shape[3]
+                        # extra_mem += k_latent.shape[0] * k_latent.shape[1] * k_latent.shape[2] * k_latent.shape[3] * 4 * 1640 # tune this?
+                       
+                        kh_len = ((latentH + (patch_size // 2)) // patch_size)
+                        kw_len = ((latentW + (patch_size // 2)) // patch_size)
+
+                        # this offset + accumulation is based on Comfy.
+                        offset_h = 0
+                        offset_w = 0
+                        if kh_len + accum_h > kw_len + accum_w:
+                            offset_w = accum_w
+                        else:
+                            offset_h = accum_h
+
+                        k_id = torch.zeros((kh_len, kw_len, 3), device=input_device, dtype=input_dtype)
+                        k_id[:, :, 0] = 1
+                        k_id[:, :, 1] += torch.linspace(offset_h, offset_h + kh_len - 1, steps=kh_len, device=input_device, dtype=input_dtype)[:, None]
+                        k_id[:, :, 2] += torch.linspace(offset_w, offset_w + kw_len - 1, steps=kw_len, device=input_device, dtype=input_dtype)[None, :]
+
+                        accum_w = max(accum_w, kw_len + offset_w)
+                        accum_h = max(accum_h, kh_len + offset_h)
+
+                        k_ids.append(repeat(k_id, "h w c -> b (h w) c", b=n))
+
+                forgeKontext.latent = torch.cat(k_latents, dim=1)
+                forgeKontext.ids = torch.cat(k_ids, dim=1)
+
+                # might as well move these now
+                forgeKontext.latent.to(device=input_device, dtype=input_dtype)
+                forgeKontext.ids.to(device=input_device, dtype=input_dtype)
+
+                del k_latent, k_id
+
+
                 IntegratedFluxTransformer2DModel.forward = patched_flux_forward
+
+                # unet = params.sd_model.forge_objects.unet
+                # print ("[Kontext] reserving extra memory (MB):", round(extra_mem/(1024*1024), 2))
+                # unet.add_extra_preserved_memory_during_sampling(extra_mem)
 
         return
 
@@ -163,6 +212,7 @@ class forgeKontext(scripts.Script):
         enabled = args[0]
         if enabled:
             forgeKontext.latent = None
+            forgeKontext.ids = None
             IntegratedFluxTransformer2DModel.forward = forgeKontext.original_forward
 
         return
