@@ -2,9 +2,10 @@ import gradio
 import torch, numpy
 
 from modules import scripts, shared
-from modules.ui_components import InputAccordion
+from modules.ui_components import InputAccordion, ToolButton
 from modules.sd_samplers_common import images_tensor_to_samples, approximation_indexes
 from backend.misc.image_resize import adaptive_resize
+from modules_forge.main_entry import get_a1111_ui_component
 
 from backend.nn.flux import IntegratedFluxTransformer2DModel
 from einops import rearrange, repeat
@@ -84,16 +85,50 @@ class forgeKontext(scripts.Script):
     def ui(self, *args, **kwargs):
         with InputAccordion(False, label=self.title()) as enabled:
             with gradio.Row():
-                kontext_image1 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
-                kontext_image2 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
-            sizing = gradio.Radio(label="Kontext image size/crop", choices=["no change", "to output", "to BFL recommended"], value="to BFL recommended")
+                with gradio.Column():
+                    kontext_image1 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
+                    with gradio.Row():
+                        image1_info = gradio.Textbox(value="", show_label=False, interactive=False, max_lines=1)
+                        image1_send = ToolButton(value='\U0001F4D0', interactive=False, variant='tertiary')
+                        image1_dims = gradio.Textbox(visible=False, value='0')
+                with gradio.Column():
+                    kontext_image2 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
+                    with gradio.Row():
+                        image2_info = gradio.Textbox(value="", show_label=False, interactive=False, max_lines=1)
+                        image2_send = ToolButton(value='\U0001F4D0', interactive=False, variant='tertiary')
+                        image2_dims = gradio.Textbox(visible=False, value='0')
+
+                def get_dims(image):
+                    if image:
+                        w = image.size[0]
+                        h = image.size[1]
+                        sw = 16 * ((15 + w) // 16)
+                        sh = 16 * ((15 + h) // 16)
+                        return f"{image.size[0]} × {image.size[1]} ({sw} × {sh})", gradio.update(interactive=True, variant='secondary'), f'{sw},{sh}'
+                    else:
+                        return  "", gradio.update(interactive=False, variant='tertiary'), '0'
+
+                kontext_image1.change(fn=get_dims, inputs=kontext_image1, outputs=[image1_info, image1_send, image1_dims], show_progress=False)
+                kontext_image2.change(fn=get_dims, inputs=kontext_image2, outputs=[image2_info, image2_send, image2_dims], show_progress=False)
+ 
+                if self.is_img2img:
+                    tab_id = gradio.State(value='img2img')
+                else:
+                    tab_id = gradio.State(value='txt2img')
+ 
+                image1_send.click(fn=None, js="set_dimensions", inputs=[tab_id, image1_dims], outputs=None)
+                image2_send.click(fn=None, js="set_dimensions", inputs=[tab_id, image2_dims], outputs=None)
+
+
             with gradio.Row():
-                swap12 = gradio.Button("swap images", scale=0)
+                sizing = gradio.Radio(label="Kontext image size/crop", choices=["no change", "to output", "to BFL recommended"], value="to BFL recommended")
                 reduce = gradio.Checkbox(False, label="reduce inputs to half width and height")
 
-                def kontext_swap(imageA, imageB):
-                    return imageB, imageA
-                swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
+            swap12 = gradio.Button("swap images", scale=0)
+
+            def kontext_swap(imageA, imageB):
+                return imageB, imageA
+            swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
 
         return enabled, kontext_image1, kontext_image2, sizing, reduce
 
@@ -111,11 +146,13 @@ class forgeKontext(scripts.Script):
                 input_device = x.device
                 input_dtype = x.dtype
 
+# todo?: cache results to avoid VAE encode
+
                 k_latents = []
                 k_ids = []
                 accum_h = 0
                 accum_w = 0
-                # extra_mem = 0
+                # extra_mem = 0   # test if useful for large inputs
                 for image in [image1, image2]:
                     if image is not None:
                         k_image = image.convert('RGB')
@@ -144,10 +181,11 @@ class forgeKontext(scripts.Script):
                             k_width //= 2
                             k_height //= 2
 
-                        print ("[Kontext] resizing and cropping input to: ", k_width, k_height)
-
                         if k_image.shape[3] != k_width or k_image.shape[2] != k_height:
+                            print ("[Kontext] resizing and center-cropping input to: ", k_width, k_height)
                             k_image = adaptive_resize(k_image, w*8, h*8, "lanczos", "center")
+                        else:
+                            print ("[Kontext] no image resize needed")
 
                         # VAE encode each input image - combined image could be large
                         k_latent = images_tensor_to_samples(k_image, approximation_indexes.get(shared.opts.sd_vae_encode_method), params.sd_model)
@@ -164,12 +202,12 @@ class forgeKontext(scripts.Script):
 
                         latentH = k_latent.shape[2]
                         latentW = k_latent.shape[3]
-                        # extra_mem += k_latent.shape[0] * k_latent.shape[1] * k_latent.shape[2] * k_latent.shape[3] * 4 * 64 # tune this?
+                        # extra_mem += k_latent.shape[0] * k_latent.shape[1] * k_latent.shape[2] * k_latent.shape[3] * 4 * 1640 # tune this?
                        
                         kh_len = ((latentH + (patch_size // 2)) // patch_size)
                         kw_len = ((latentW + (patch_size // 2)) // patch_size)
 
-                        # this offset + accum is based on Comfy. Seems overkill for two inputs, might be needed if add more
+                        # this offset + accumulation is based on Comfy.
                         offset_h = 0
                         offset_w = 0
                         if kh_len + accum_h > kw_len + accum_w:
@@ -196,10 +234,9 @@ class forgeKontext(scripts.Script):
 
                 del k_latent, k_id
 
-                
+
                 IntegratedFluxTransformer2DModel.forward = patched_flux_forward
 
-                # ??
                 # unet = params.sd_model.forge_objects.unet
                 # print ("[Kontext] reserving extra memory (MB):", round(extra_mem/(1024*1024), 2))
                 # unet.add_extra_preserved_memory_during_sampling(extra_mem)
