@@ -94,6 +94,7 @@ class forgeKontext(scripts.Script):
                 with gradio.Column():
                     kontext_image2 = gradio.Image(show_label=False, type="pil", height=300, sources=["upload", "clipboard"])
                     with gradio.Row():
+                        swap12 = ToolButton("\U000021C4")
                         image2_info = gradio.Textbox(value="", show_label=False, interactive=False, max_lines=1)
                         image2_send = ToolButton(value='\U0001F4D0', interactive=False, variant='tertiary')
                         image2_dims = gradio.Textbox(visible=False, value='0')
@@ -122,13 +123,12 @@ class forgeKontext(scripts.Script):
 
             with gradio.Row():
                 sizing = gradio.Dropdown(label="Kontext image size/crop", choices=["no change", "to output", "to BFL recommended"], value="to BFL recommended")
-                reduce = gradio.Checkbox(False, label="reduce to half width and height")
+                reduce = gradio.Checkbox(False, info="This reduction is independent of the size/crop setting.", label="reduce to half width and height")
 
-                swap12 = gradio.Button("swap images", size='sm', scale=0)
 
-                def kontext_swap(imageA, imageB):
-                    return imageB, imageA
-                swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
+            def kontext_swap(imageA, imageB):
+                return imageB, imageA
+            swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
 
         return enabled, kontext_image1, kontext_image2, sizing, reduce
 
