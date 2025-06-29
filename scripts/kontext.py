@@ -121,14 +121,14 @@ class forgeKontext(scripts.Script):
 
 
             with gradio.Row():
-                sizing = gradio.Radio(label="Kontext image size/crop", choices=["no change", "to output", "to BFL recommended"], value="to BFL recommended")
-                reduce = gradio.Checkbox(False, label="reduce inputs to half width and height")
+                sizing = gradio.Dropdown(label="Kontext image size/crop", choices=["no change", "to output", "to BFL recommended"], value="to BFL recommended")
+                reduce = gradio.Checkbox(False, label="reduce to half width and height")
 
-            swap12 = gradio.Button("swap images", scale=0)
+                swap12 = gradio.Button("swap images", size='sm', scale=0)
 
-            def kontext_swap(imageA, imageB):
-                return imageB, imageA
-            swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
+                def kontext_swap(imageA, imageB):
+                    return imageB, imageA
+                swap12.click(fn=kontext_swap, inputs=[kontext_image1, kontext_image2], outputs=[kontext_image1, kontext_image2])
 
         return enabled, kontext_image1, kontext_image2, sizing, reduce
 
