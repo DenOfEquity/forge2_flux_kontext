@@ -148,7 +148,7 @@ class forgeKontext(scripts.Script):
 
                         if k_image.shape[3] != k_width or k_image.shape[2] != k_height:
                             print ("[Kontext] resizing and center-cropping input to: ", k_width, k_height)
-                            k_image = adaptive_resize(k_image, w*8, h*8, "lanczos", "center")
+                            k_image = adaptive_resize(k_image, k_width, k_height, "lanczos", "center")
                         else:
                             print ("[Kontext] no image resize needed")
 
