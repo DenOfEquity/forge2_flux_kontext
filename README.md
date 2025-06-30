@@ -40,3 +40,4 @@ Euler Simple is a reliable sampler/scheduler combo, others will work too and may
 
 In img2img, you need very high denoise to see effect so that probably isn't a good way to increase preservation of the original. Quick tests show that inpainting works well.
 
+Works with [BlockCache](https://github.com/DenOfEquity/sd-forge-blockcache). I've had good results with TeaCache, 3 uncached starting steps, 0.25 threshold, 1 max. consecutive uncached - reducing inference time by 40%. (I haven't tried to find an optimal speed/quality trade-off, so ~~don't carve those parameters into stone and start a religion based on them~~ do your own testing.) Ideal parameters will vary based on sampler, image size.
