@@ -12,6 +12,13 @@ from einops import rearrange, repeat
 
 def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs):
     bs, c, h, w = x.shape
+
+    if c != 16:
+        # fix for the case where user is also using FluxTools extension, x has extra channels
+        # spam message every step, so user might pay attention, or silently fix?
+        # print ("\n[Kontext] ERROR: too many channels, excess channels will be stripped.\n")
+        x = x[:, :16, :, :]
+
     input_device = x.device
     input_dtype = x.dtype
     patch_size = 2
