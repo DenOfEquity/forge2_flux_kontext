@@ -2,7 +2,13 @@
 ### second implementation, because the first was too KISS ###
 
 install:
-**Extensions** tab, **Install from URL**, use URL for this repo
+**Extensions** tab, **Install from URL**, use [URL](https://github.com/DenOfEquity/forge2_flux_kontext) for this repo
+
+>[!IMPORTANT]
+>For full GGUF compatibility, Forge must be up to date.
+>
+>Otherwise you may get an error of the form `RuntimeError: mat1 and mat2 shapes cannot be multiplied`
+
 
 ---
 
