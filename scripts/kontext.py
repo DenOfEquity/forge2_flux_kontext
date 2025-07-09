@@ -164,9 +164,9 @@ class forgeKontext(scripts.Script):
                 for image in [image1, image2]:
                     if image is not None:
                         if isinstance (image, str):
-                            k_image = decode_base64_to_image(image)
-
-                        k_image = image.convert('RGB')
+                            k_image = decode_base64_to_image(image).convert('RGB')
+                        else:
+                            k_image = image.convert('RGB')
                         k_image = numpy.array(k_image) / 255.0
                         k_image = numpy.transpose(k_image, (2, 0, 1))
                         k_image = torch.tensor(k_image).unsqueeze(0)
