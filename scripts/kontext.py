@@ -1,5 +1,8 @@
 import gradio
 import torch, numpy
+import base64
+import io
+from PIL import Image
 
 from modules import scripts, shared
 from modules.ui_components import InputAccordion, ToolButton
@@ -162,6 +165,17 @@ class forgeKontext(scripts.Script):
                 # extra_mem = 0   # test if useful for large inputs
                 for image in [image1, image2]:
                     if image is not None:
+                        # --- START: ADDED CODE FOR API/Base64 SUPPORT ---
+                        if isinstance(image, str):
+                            try:
+                                # If image is a string, it's Base64 from the API. Decode it.
+                                decoded_image = base64.b64decode(image)
+                                image = Image.open(io.BytesIO(decoded_image))
+                            except Exception as e:
+                                print(f"[Kontext] Error decoding Base64 image from API: {e}")
+                                continue # Skip to the next image if this one is invalid
+                        # --- END: ADDED CODE FOR API/Base64 SUPPORT ---
+
                         k_image = image.convert('RGB')
                         k_image = numpy.array(k_image) / 255.0
                         k_image = numpy.transpose(k_image, (2, 0, 1))
