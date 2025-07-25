@@ -1,5 +1,6 @@
 import gradio
 import torch, numpy
+from modules.api.api import decode_base64_to_image
 
 from modules import scripts, shared
 from modules.ui_components import InputAccordion, ToolButton
@@ -162,7 +163,10 @@ class forgeKontext(scripts.Script):
                 # extra_mem = 0   # test if useful for large inputs
                 for image in [image1, image2]:
                     if image is not None:
-                        k_image = image.convert('RGB')
+                        if isinstance (image, str):
+                            k_image = decode_base64_to_image(image).convert('RGB')
+                        else:
+                            k_image = image.convert('RGB')
                         k_image = numpy.array(k_image) / 255.0
                         k_image = numpy.transpose(k_image, (2, 0, 1))
                         k_image = torch.tensor(k_image).unsqueeze(0)
