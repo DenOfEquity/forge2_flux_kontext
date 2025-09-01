@@ -4,9 +4,9 @@ from modules.api.api import decode_base64_to_image
 
 from modules import scripts, shared
 from modules.ui_components import InputAccordion, ToolButton
-from modules.sd_samplers_common import images_tensor_to_samples, approximation_indexes
+from modules.sd_samplers_common import images_tensor_to_samples
 from backend.misc.image_resize import adaptive_resize
-
+from backend.memory_management import vae_offload_device
 from backend.nn.flux import IntegratedFluxTransformer2DModel
 from einops import rearrange, repeat
 
@@ -15,7 +15,7 @@ def patched_flux_forward(self, x, timestep, context, y, guidance=None, **kwargs)
     bs, c, h, w = x.shape
 
     if c != 16:
-        # fix for the case where user is also using FluxTools extension, x has extra channels
+        # fix the case where user is also using FluxTools extension, x has extra channels
         # spam message every step, so user might pay attention, or silently fix?
         # print ("\n[Kontext] ERROR: too many channels, excess channels will be stripped.\n")
         x = x[:, :16, :, :]
@@ -154,13 +154,11 @@ class forgeKontext(scripts.Script):
                 input_device = x.device
                 input_dtype = x.dtype
 
-# todo?: cache results to avoid VAE encode
-
                 k_latents = []
                 k_ids = []
                 accum_h = 0
                 accum_w = 0
-                # extra_mem = 0   # test if useful for large inputs
+                extra_mem = 0
                 for image in [image1, image2]:
                     if image is not None:
                         if isinstance (image, str):
@@ -199,7 +197,7 @@ class forgeKontext(scripts.Script):
                             print ("[Kontext] no image resize needed")
 
                         # VAE encode each input image - combined image could be large
-                        k_latent = images_tensor_to_samples(k_image, approximation_indexes.get(shared.opts.sd_vae_encode_method), params.sd_model)
+                        k_latent = images_tensor_to_samples(k_image, None, None)
 
                         # pad if needed - latent width and height must be multiple of 2
                         # could just adjust the resize to be *16, but the padding might be better for images that need only one extra row/col
@@ -213,7 +211,7 @@ class forgeKontext(scripts.Script):
 
                         latentH = k_latent.shape[2]
                         latentW = k_latent.shape[3]
-                        # extra_mem += k_latent.shape[0] * k_latent.shape[1] * k_latent.shape[2] * k_latent.shape[3] * 4 * 1640 # tune this?
+                        extra_mem += n * k_latent.shape[1] * k_latent.shape[2] * k_latent.shape[3] * x.element_size() * 1024 # tune this?
                        
                         kh_len = ((latentH + (patch_size // 2)) // patch_size)
                         kw_len = ((latentW + (patch_size // 2)) // patch_size)
@@ -245,12 +243,13 @@ class forgeKontext(scripts.Script):
 
                 del k_latent, k_id
 
+                # force unload VAE
+                params.sd_model.forge_objects.vae.first_stage_model.to(vae_offload_device())
 
                 IntegratedFluxTransformer2DModel.forward = patched_flux_forward
 
-                # unet = params.sd_model.forge_objects.unet
-                # print ("[Kontext] reserving extra memory (MB):", round(extra_mem/(1024*1024), 2))
-                # unet.add_extra_preserved_memory_during_sampling(extra_mem)
+                print ("[Kontext] reserving extra memory (MB):", round(extra_mem/(1024*1024), 2))
+                params.sd_model.forge_objects.unet.extra_preserved_memory_during_sampling = extra_mem
 
         return
 
@@ -260,5 +259,6 @@ class forgeKontext(scripts.Script):
             forgeKontext.latent = None
             forgeKontext.ids = None
             IntegratedFluxTransformer2DModel.forward = forgeKontext.original_forward
+            params.sd_model.forge_objects.unet.extra_preserved_memory_during_sampling = 0
 
         return
