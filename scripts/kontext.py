@@ -244,7 +244,7 @@ class forgeKontext(scripts.Script):
                 del k_latent, k_id
 
                 # force unload VAE
-                params.sd_model.forge_objects.vae.first_stage_model.to(device=vae_offload_device())
+                #params.sd_model.forge_objects.vae.first_stage_model.to(device=vae_offload_device())
 
                 IntegratedFluxTransformer2DModel.forward = patched_flux_forward
 
@@ -262,4 +262,5 @@ class forgeKontext(scripts.Script):
             params.sd_model.forge_objects.unet.extra_preserved_memory_during_sampling = 0
 
         return
+
 
