@@ -1,8 +1,7 @@
 ## Flux-Kontext extension for Forge2 webUI ##
-### second implementation, because the first was too KISS ###
 
-install:
-**Extensions** tab, **Install from URL**, use [URL](https://github.com/DenOfEquity/forge2_flux_kontext) for this repo
+### install: ###
+Go to ***Extensions*** tab, ***Install from URL***, use [URL](https://github.com/DenOfEquity/forge2_flux_kontext) for this repo.
 
 >[!IMPORTANT]
 >For full GGUF compatibility, Forge must be up to date.
@@ -27,6 +26,29 @@ If your generation size and input sizes match, and conform to recommended resolu
 
 *reduce inputs to half width and height* option shrinks the input images to half width and height - may reduce details but improves performance. Applies after the above option. If generating at low resolution and using 'to BFL recommended', also using this option is recommended.
 
+---
+### API ###
+Simply: encode input image(s) to base64; send the resultant strings to the extension.
+
+Your payload should look like this, where `...` is your normal specification of model, prompt, dimensions, steps, etc.:
+```
+{
+    ...                                 // usual payload
+    "alwayson_scripts": {
+        "Forge FluxKontext": {
+            "args": [
+                true,                   // enable
+                null,                   // image 1 encoded to base64 string
+                null,                   // image 2 encoded to base64 string
+                "to BFL recommended",   // Kontext image size/crop, options are: "no change" | "to output" | "to BFL recommended"
+                false                   // reduce input to half width and height, after size/crop
+            ]
+        }
+    }
+}
+```
+
+---
 For reference, the BlackForestLabs preferred resolutions are:
 * 672 × 1568 *and* 1568 × 672
 * 688 × 1504 *and* 1504 × 688
@@ -37,7 +59,6 @@ For reference, the BlackForestLabs preferred resolutions are:
 * 880 × 1184 *and* 1184 × 880
 * 944 × 1104 *and* 1104 × 944
 * 1024 × 1024
-
 
 ---
 [Prompting guide](https://docs.bfl.ai/guides/prompting_guide_kontext_i2i) from BlackForestLabs.
